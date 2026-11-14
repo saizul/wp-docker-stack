@@ -276,7 +276,7 @@ bash test/smoke.sh   # full end-to-end run against real Docker (uses port 8080)
 - **Secrets** are generated locally by `make init` (`/dev/urandom`, 32 or 64 characters) into `./secrets/`. The directory is mode 700, and the files are 644 so the `mysql`, `redis` and `www-data` users inside the containers can read them through the bind mounts. They reach the containers as Compose secrets (`*_FILE` variables), never as plain environment variables. `.env` and `secrets/` are gitignored.
 - **No exposed database or cache.** MariaDB and Redis sit only on an `internal` network with no published ports and no internet access. Redis also requires a password.
 - **Least privilege.** Every container runs with `no-new-privileges` and `cap_drop: ALL`; nginx, Caddy and Traefik get back only the few capabilities they need. PHP, cron, backup, Redis and MariaDB run as non-root users. nginx, PHP, cron, Redis and backup have read-only root filesystems with tmpfs scratch space. nginx mounts the WordPress files read-only.
-- **Limits.** Every service has memory limits and `pids_limit`, plus CPU limits on PHP and the database. Logs are rotated (`json-file`, 5 × 10 MB).
+- **Limits.** Every service has memory and process (`pids`) limits, plus CPU limits on PHP and the database. Logs are rotated (`json-file`, 5 × 10 MB).
 - **WordPress hardening.** `DISALLOW_FILE_EDIT`, WP-Cron disabled in favour of the cron container, and XML-RPC blocked by default.
 - **Supply chain.** Base images are official Docker Hub images pinned to a minor version. wp-cli is checked against its SHA-512.
 - The Traefik profile mounts the Docker socket read-only. That still gives read access to the Docker API, so use a socket proxy where that matters.

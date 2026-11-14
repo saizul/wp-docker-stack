@@ -106,8 +106,8 @@ services:
     deploy:
       resources:
         limits:
+          pids: 256
           memory: ${LIMIT_NGINX_MEM:-256m}
-    pids_limit: 256
     labels:
       traefik.enable: "true"
       traefik.docker.network: ${COMPOSE_PROJECT_NAME:-wpstack}_edge
@@ -153,9 +153,9 @@ services:
     deploy:
       resources:
         limits:
+          pids: 512
           cpus: "${LIMIT_PHP_CPUS:-2}"
           memory: ${LIMIT_PHP_MEM:-1g}
-    pids_limit: 512
 
   cron:
     <<: *hardening
@@ -186,8 +186,8 @@ services:
     deploy:
       resources:
         limits:
+          pids: 128
           memory: ${LIMIT_CRON_MEM:-512m}
-    pids_limit: 128
 
   db:
     <<: *hardening
@@ -222,9 +222,9 @@ services:
     deploy:
       resources:
         limits:
+          pids: 512
           cpus: "${LIMIT_DB_CPUS:-2}"
           memory: ${LIMIT_DB_MEM:-1g}
-    pids_limit: 512
 
   redis:
     <<: *hardening
@@ -252,8 +252,8 @@ services:
     deploy:
       resources:
         limits:
+          pids: 64
           memory: ${LIMIT_REDIS_MEM:-384m}
-    pids_limit: 64
 
   backup:
     <<: *hardening
@@ -301,8 +301,8 @@ services:
     deploy:
       resources:
         limits:
+          pids: 128
           memory: ${LIMIT_BACKUP_MEM:-512m}
-    pids_limit: 128
 
   # One-off restore helper: `make restore NAME=<backup>` (profile "tools").
   restore:

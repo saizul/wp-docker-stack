@@ -87,7 +87,9 @@ done
 step "hardening"
 uid="$(docker compose exec -T php id -u | tr -d '\r')"
 [ "$uid" = "82" ] || fail "php runs as uid $uid (expected 82)"
-if docker compose port db 3306 >/dev/null 2>&1; then fail "database port is published"; fi
+# `docker port` lists only host-published bindings; an internal-only container prints nothing.
+db_ports="$(docker port "$(docker compose ps -q db)" 2>/dev/null || true)"
+[ -z "$db_ports" ] || fail "database port is published: $db_ports"
 if docker compose port redis 6379 >/dev/null 2>&1; then fail "redis port is published"; fi
 for svc in nginx php cron redis backup; do
   ro="$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$(docker compose ps -q "$svc")")"

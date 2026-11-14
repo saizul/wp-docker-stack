@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: shellcheck + hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          make shellcheck
+          shellcheck -s bash -S warning test/*.bats
+      - name: hadolint
+        run: make hadolint
+
+  bats:
+    name: bats
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: bats tests (docker is stubbed)
+        run: npx --yes bats@1.13.0 test
+
+  compose:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose version
+      - run: make compose-validate
+
+  smoke:
+    name: smoke test (real docker compose up)
+    runs-on: ubuntu-latest
+    needs: [lint, bats, compose]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run the stack, check the installer, install, cache, backup, restore
+        run: bash test/smoke.sh
+      - name: Container status and logs
+        if: always()
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color --tail=200 || true
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans || true

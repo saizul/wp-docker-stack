@@ -1,0 +1,10 @@
+# Local configuration and generated secrets: never commit these.
+.env
+.env.*
+!.env.example
+secrets/
+docker-compose.override.yml
+backups/
+node_modules/
+*.log
+.DS_Store

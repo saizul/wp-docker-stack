@@ -1,0 +1,28 @@
+# Copy to docker-compose.override.yml (gitignored) for local development.
+# Docker Compose merges it automatically with docker-compose.yml.
+services:
+  php:
+    environment:
+      WORDPRESS_DEBUG: "1"
+    volumes:
+      # Develop a theme or plugin from your working copy.
+      - ./src/my-theme:/var/www/html/wp-content/themes/my-theme
+
+  cron:
+    volumes:
+      - ./src/my-theme:/var/www/html/wp-content/themes/my-theme:ro
+
+  nginx:
+    environment:
+      # Disable the page cache while developing.
+      NGINX_FASTCGI_CACHE: "off"
+    volumes:
+      - ./src/my-theme:/var/www/html/wp-content/themes/my-theme:ro
+
+  # Catch outgoing mail in a web UI on http://127.0.0.1:8025
+  # (point an SMTP plugin at host "mailpit", port 1025).
+  mailpit:
+    image: axllent/mailpit:v1.33
+    ports:
+      - "127.0.0.1:8025:8025"
+    networks: [app, edge]

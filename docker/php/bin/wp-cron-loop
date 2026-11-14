@@ -1,0 +1,44 @@
+#!/bin/sh
+# Run due WP-Cron events with wp-cli on a fixed interval (WP-Cron itself is
+# disabled via DISABLE_WP_CRON). `wp-cron-loop --health` checks the heartbeat.
+set -eu
+
+interval="${WP_CRON_INTERVAL:-60}"
+heartbeat="${WP_CRON_HEARTBEAT:-/tmp/wp-cron-heartbeat}"
+wp_dir="${WP_DIR:-/var/www/html}"
+wp_bin="${WP_BIN:-wp}"
+
+case "$interval" in
+  ''|*[!0-9]*) echo "WP_CRON_INTERVAL must be a positive integer" >&2; exit 2 ;;
+esac
+[ "$interval" -ge 1 ] || { echo "WP_CRON_INTERVAL must be >= 1" >&2; exit 2; }
+
+if [ "${1:-}" = "--health" ]; then
+  [ -s "$heartbeat" ] || { echo "no heartbeat yet" >&2; exit 1; }
+  last="$(cat "$heartbeat")"
+  now="$(date +%s)"
+  max_age=$((interval * 3 + 60))
+  if [ $((now - last)) -gt "$max_age" ]; then
+    echo "heartbeat is $((now - last))s old (max ${max_age}s)" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+run_once() {
+  if [ -s "$wp_dir/wp-config.php" ] && "$wp_bin" --path="$wp_dir" core is-installed >/dev/null 2>&1; then
+    if ! "$wp_bin" --path="$wp_dir" cron event run --due-now --quiet; then
+      echo "wp-cron-loop: 'wp cron event run' failed" >&2
+    fi
+  fi
+  date +%s > "$heartbeat"
+}
+
+trap 'exit 0' TERM INT
+
+while :; do
+  run_once
+  [ "${WP_CRON_ONCE:-0}" = "1" ] && exit 0
+  sleep "$interval" &
+  wait $! || true
+done

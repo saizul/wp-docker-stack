@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# wpstack: command line for wp-docker-stack. Run `bin/wpstack help`.
+set -Eeuo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR/..
+# shellcheck source=lib/wpstack.sh
+. "$SELF_DIR/../lib/wpstack.sh"
+
+main "$@"

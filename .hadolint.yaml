@@ -1,0 +1,6 @@
+# hadolint configuration
+failure-threshold: warning
+ignored:
+  # Alpine package versions are not pinned on purpose: the base image tag pins
+  # the Alpine release, and security fixes arrive through `make update`.
+  - DL3018

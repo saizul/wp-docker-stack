@@ -1,0 +1,438 @@
+# wp-docker-stack: production WordPress on Docker Compose.
+# Configuration comes from .env (see .env.example). Secrets live in ./secrets/.
+
+name: ${COMPOSE_PROJECT_NAME:-wpstack}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *logging
+
+x-wordpress-env: &wordpress-env
+  WORDPRESS_DB_HOST: db:3306
+  WORDPRESS_DB_NAME: ${DB_NAME:-wordpress}
+  WORDPRESS_DB_USER: ${DB_USER:-wordpress}
+  WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password
+  WORDPRESS_TABLE_PREFIX: ${DB_TABLE_PREFIX:-wp_}
+  WORDPRESS_DEBUG: ${WP_DEBUG:-}
+  WORDPRESS_AUTH_KEY_FILE: /run/secrets/wp_auth_key
+  WORDPRESS_SECURE_AUTH_KEY_FILE: /run/secrets/wp_secure_auth_key
+  WORDPRESS_LOGGED_IN_KEY_FILE: /run/secrets/wp_logged_in_key
+  WORDPRESS_NONCE_KEY_FILE: /run/secrets/wp_nonce_key
+  WORDPRESS_AUTH_SALT_FILE: /run/secrets/wp_auth_salt
+  WORDPRESS_SECURE_AUTH_SALT_FILE: /run/secrets/wp_secure_auth_salt
+  WORDPRESS_LOGGED_IN_SALT_FILE: /run/secrets/wp_logged_in_salt
+  WORDPRESS_NONCE_SALT_FILE: /run/secrets/wp_nonce_salt
+  WP_URL: ${WP_URL:-}
+  WORDPRESS_CONFIG_EXTRA: |
+    define('DISABLE_WP_CRON', true);
+    define('DISALLOW_FILE_EDIT', true);
+    define('FS_METHOD', 'direct');
+    define('WP_REDIS_HOST', 'redis');
+    define('WP_REDIS_PORT', 6379);
+    define('WP_REDIS_PASSWORD', trim((string) @file_get_contents('/run/secrets/redis_password')));
+    define('WP_REDIS_PREFIX', getenv('COMPOSE_PROJECT_NAME') ?: 'wpstack');
+    define('WP_CACHE_KEY_SALT', getenv('COMPOSE_PROJECT_NAME') ?: 'wpstack');
+    if (getenv('WP_URL')) { define('WP_HOME', getenv('WP_URL')); define('WP_SITEURL', getenv('WP_URL')); }
+  COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-wpstack}
+  HOME: /tmp
+  WP_CLI_CACHE_DIR: /tmp/wp-cli-cache
+  PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-256M}
+  PHP_UPLOAD_MAX: ${PHP_UPLOAD_MAX:-64M}
+  PHP_MAX_EXECUTION_TIME: ${PHP_MAX_EXECUTION_TIME:-120}
+  PHP_OPCACHE_MEMORY: ${PHP_OPCACHE_MEMORY:-192}
+
+x-wordpress-secrets: &wordpress-secrets
+  - db_password
+  - redis_password
+  - wp_auth_key
+  - wp_secure_auth_key
+  - wp_logged_in_key
+  - wp_nonce_key
+  - wp_auth_salt
+  - wp_secure_auth_salt
+  - wp_logged_in_salt
+  - wp_nonce_salt
+
+x-php-build: &php-build
+  context: ./docker/php
+  args:
+    WORDPRESS_BASE_IMAGE: ${WORDPRESS_BASE_IMAGE:-wordpress:7.1-php8.4-fpm-alpine}
+
+services:
+  nginx:
+    <<: *hardening
+    image: ${NGINX_IMAGE:-nginx:1.30-alpine}
+    depends_on:
+      php:
+        condition: service_healthy
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+    environment:
+      NGINX_ENVSUBST_FILTER: "^NGINX_"
+      NGINX_FASTCGI_CACHE: ${NGINX_FASTCGI_CACHE:-on}
+      NGINX_CACHE_VALID: ${NGINX_CACHE_VALID:-10m}
+      NGINX_CACHE_MAX_SIZE: ${NGINX_CACHE_MAX_SIZE:-512m}
+      NGINX_BLOCK_XMLRPC: ${NGINX_BLOCK_XMLRPC:-on}
+      NGINX_REAL_IP_FROM: ${NGINX_REAL_IP_FROM:-172.16.0.0/12}
+      NGINX_CLIENT_MAX_BODY: ${PHP_UPLOAD_MAX:-64M}
+    volumes:
+      - wordpress:/var/www/html:ro
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+      - ./docker/nginx/snippets:/etc/nginx/snippets:ro
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d
+      - /var/cache/nginx
+      - /run
+      - /tmp
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    networks: [edge, app]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_NGINX_MEM:-256m}
+    pids_limit: 256
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${COMPOSE_PROJECT_NAME:-wpstack}_edge
+      traefik.http.routers.wpstack.rule: Host(`${DOMAIN:-localhost}`)
+      traefik.http.routers.wpstack.entrypoints: websecure
+      traefik.http.routers.wpstack.tls.certresolver: le
+      traefik.http.routers.wpstack.middlewares: wpstack-headers
+      traefik.http.middlewares.wpstack-headers.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.wpstack-headers.headers.stsIncludeSubdomains: "true"
+      traefik.http.services.wpstack.loadbalancer.server.port: "8080"
+
+  php:
+    <<: *hardening
+    build: *php-build
+    image: ${COMPOSE_PROJECT_NAME:-wpstack}-php:local
+    user: "www-data:www-data"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *wordpress-env
+      PHP_FPM_MAX_CHILDREN: ${PHP_FPM_MAX_CHILDREN:-10}
+      PHP_FPM_START_SERVERS: ${PHP_FPM_START_SERVERS:-3}
+      PHP_FPM_MIN_SPARE: ${PHP_FPM_MIN_SPARE:-2}
+      PHP_FPM_MAX_SPARE: ${PHP_FPM_MAX_SPARE:-5}
+      PHP_FPM_MAX_REQUESTS: ${PHP_FPM_MAX_REQUESTS:-500}
+    secrets: *wordpress-secrets
+    volumes:
+      - wordpress:/var/www/html
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    networks: [app, egress]
+    healthcheck:
+      test: ["CMD", "php-fpm-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${LIMIT_PHP_CPUS:-2}"
+          memory: ${LIMIT_PHP_MEM:-1g}
+    pids_limit: 512
+
+  cron:
+    <<: *hardening
+    build: *php-build
+    image: ${COMPOSE_PROJECT_NAME:-wpstack}-php:local
+    user: "www-data:www-data"
+    command: ["wp-cron-loop"]
+    depends_on:
+      php:
+        condition: service_healthy
+    environment:
+      <<: *wordpress-env
+      WP_CRON_INTERVAL: ${WP_CRON_INTERVAL:-60}
+    secrets: *wordpress-secrets
+    volumes:
+      - wordpress:/var/www/html
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    networks: [app, egress]
+    healthcheck:
+      test: ["CMD", "wp-cron-loop", "--health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_CRON_MEM:-512m}
+    pids_limit: 128
+
+  db:
+    <<: *hardening
+    image: ${MARIADB_IMAGE:-mariadb:11.8}
+    user: "mysql:mysql"
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-wordpress}
+      MARIADB_USER: ${DB_USER:-wordpress}
+      MARIADB_PASSWORD_FILE: /run/secrets/db_password
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+      MARIADB_AUTO_UPGRADE: "1"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-name-resolve
+      - --innodb-buffer-pool-size=${DB_INNODB_BUFFER_POOL:-256M}
+      - --max-connections=${DB_MAX_CONNECTIONS:-100}
+    secrets:
+      - db_password
+      - db_root_password
+    volumes:
+      - db:/var/lib/mysql
+    cap_drop: [ALL]
+    networks: [app]
+    # No ports: the database is only reachable on the internal "app" network.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "${LIMIT_DB_CPUS:-2}"
+          memory: ${LIMIT_DB_MEM:-1g}
+    pids_limit: 512
+
+  redis:
+    <<: *hardening
+    image: ${REDIS_IMAGE:-redis:8.8-alpine}
+    user: "redis:redis"
+    command:
+      - sh
+      - -c
+      - >-
+        exec redis-server --save '' --appendonly no
+        --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy allkeys-lru
+        --requirepass "$$(cat /run/secrets/redis_password)"
+    secrets:
+      - redis_password
+    read_only: true
+    tmpfs:
+      - /data
+    cap_drop: [ALL]
+    networks: [app]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$(cat /run/secrets/redis_password)\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_REDIS_MEM:-384m}
+    pids_limit: 64
+
+  backup:
+    <<: *hardening
+    build:
+      context: ./docker/backup
+      args:
+        BACKUP_BASE_IMAGE: ${BACKUP_BASE_IMAGE:-alpine:3.24}
+    image: ${COMPOSE_PROJECT_NAME:-wpstack}-backup:local
+    user: "www-data:www-data"
+    command: ["daemon"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: &backup-env
+      DB_HOST: db
+      DB_NAME: ${DB_NAME:-wordpress}
+      DB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+      BACKUP_TIME: ${BACKUP_TIME:-03:30}
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_ON_START: ${BACKUP_ON_START:-false}
+      BACKUP_OFFSITE: ${BACKUP_OFFSITE:-none}
+      S3_PROVIDER: ${S3_PROVIDER:-Cloudflare}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PREFIX: ${S3_PREFIX:-wordpress}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+    secrets:
+      - db_root_password
+    volumes:
+      - wordpress:/var/www/html:ro
+      - backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    networks: [app, egress]
+    healthcheck:
+      test: ["CMD", "backup.sh", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_BACKUP_MEM:-512m}
+    pids_limit: 128
+
+  # One-off restore helper: `make restore NAME=<backup>` (profile "tools").
+  restore:
+    image: ${COMPOSE_PROJECT_NAME:-wpstack}-backup:local
+    build:
+      context: ./docker/backup
+      args:
+        BACKUP_BASE_IMAGE: ${BACKUP_BASE_IMAGE:-alpine:3.24}
+    profiles: [tools]
+    user: "www-data:www-data"
+    environment: *backup-env
+    secrets:
+      - db_root_password
+    volumes:
+      - wordpress:/var/www/html
+      - backups:/backups:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    networks: [app]
+    logging: *logging
+
+  caddy:
+    <<: *hardening
+    image: ${CADDY_IMAGE:-caddy:2.11-alpine}
+    profiles: [caddy]
+    depends_on:
+      nginx:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  traefik:
+    <<: *hardening
+    image: ${TRAEFIK_IMAGE:-traefik:v3.7}
+    profiles: [traefik]
+    depends_on:
+      nginx:
+        condition: service_healthy
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:-}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --ping=true
+      - --log.level=INFO
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Read-only socket access; consider a docker socket proxy in high-security setups.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+networks:
+  edge:
+    name: ${COMPOSE_PROJECT_NAME:-wpstack}_edge
+  app:
+    internal: true
+  egress: {}
+
+volumes:
+  wordpress:
+  db:
+  backups:
+  caddy_data:
+  caddy_config:
+  traefik_letsencrypt:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+  db_root_password:
+    file: ./secrets/db_root_password
+  redis_password:
+    file: ./secrets/redis_password
+  wp_auth_key:
+    file: ./secrets/wp_auth_key
+  wp_secure_auth_key:
+    file: ./secrets/wp_secure_auth_key
+  wp_logged_in_key:
+    file: ./secrets/wp_logged_in_key
+  wp_nonce_key:
+    file: ./secrets/wp_nonce_key
+  wp_auth_salt:
+    file: ./secrets/wp_auth_salt
+  wp_secure_auth_salt:
+    file: ./secrets/wp_secure_auth_salt
+  wp_logged_in_salt:
+    file: ./secrets/wp_logged_in_salt
+  wp_nonce_salt:
+    file: ./secrets/wp_nonce_salt

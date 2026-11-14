@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Test double for curl: prints STUB_HTTP_CODE and records the call.
+set -euo pipefail
+printf 'curl %s\n' "$*" >> "${STUB_LOG:?STUB_LOG not set}"
+printf '%s' "${STUB_HTTP_CODE:-200}"
